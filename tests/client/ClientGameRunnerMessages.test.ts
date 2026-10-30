@@ -53,9 +53,6 @@ vi.mock("../../src/client/TerrainMapFileLoader", () => ({
 vi.mock("../../src/client/hud/GameRenderer", () => ({
   createRenderer: vi.fn(),
 }));
-vi.mock("../../src/client/hud/layers/lib/GoldRateTracker", () => ({
-  goldRateTracker: { resetAll: vi.fn() },
-}));
 vi.mock("../../src/client/theme/ThemeProvider", () => ({
   themeProvider: { reset: vi.fn() },
 }));

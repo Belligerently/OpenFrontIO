@@ -32,7 +32,6 @@ import { MapLayerController } from "./controllers/MapLayerController";
 import { isDesktopShell } from "./DesktopShell";
 import { GameMetrics } from "./GameMetrics";
 import { createRenderer, GameRenderer } from "./hud/GameRenderer";
-import { goldRateTracker } from "./hud/layers/lib/GoldRateTracker";
 import { OnboardingOverlay } from "./hud/layers/OnboardingOverlay";
 import { UnitDisplay } from "./hud/layers/UnitDisplay";
 import { showInGameAlert } from "./InGameModal";
@@ -146,7 +145,6 @@ export function joinLobby(
 
   const userSettings: UserSettings = new UserSettings();
   themeProvider.reset(); // fresh colour allocators for this game
-  goldRateTracker.resetAll(); // drop samples from a previous in-page game
 
   const transport = new Transport(lobbyConfig, eventBus);
 

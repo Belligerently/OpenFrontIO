@@ -133,10 +133,9 @@ describe("PlayerStats", () => {
   });
 
   it("centers headers and discrete counts and renders white troop icons", async () => {
-    new UserSettings().setStatsColumns("player", [
+    new UserSettings().setStatsColumns("player", "info", [
       "troops",
       "maxtroops",
-      "cities",
     ]);
     const me = player("me", 3);
     const game = {
@@ -158,9 +157,6 @@ describe("PlayerStats", () => {
     const headers = playerStats.querySelectorAll(
       '.stats-table-header > [role="columnheader"]',
     );
-    const countCell = playerStats.querySelector(
-      '.stats-table-row > [role="cell"]:nth-child(5)',
-    );
     const troopIcon = headers[2].querySelector("img");
     const maxTroopIcons = headers[3].querySelectorAll("img");
     expect(headers[1].classList).toContain("justify-center");
@@ -178,6 +174,13 @@ describe("PlayerStats", () => {
     expect(maxTroopIcons[1].getAttribute("src")).toBe(upperLimitIcon);
     expect(maxTroopIcons[1].classList).toContain("brightness-0");
     expect(maxTroopIcons[1].classList).toContain("invert");
+
+    playerStats.tab = "structures";
+    await playerStats.updateComplete;
+    // rank | player | cities: building counts are centred.
+    const countCell = playerStats.querySelector(
+      '.stats-table-row > [role="cell"]:nth-child(3)',
+    );
     expect(countCell?.classList).toContain("justify-center");
     expect(countCell?.classList).toContain("text-center");
 
@@ -192,7 +195,7 @@ describe("PlayerStats clan column", () => {
       UserSettings as unknown as { cache: Map<string, string | null> }
     ).cache.clear();
     // Off by default; these tests turn it on in the picker.
-    new UserSettings().setStatsColumns("player", [
+    new UserSettings().setStatsColumns("player", "info", [
       "clan",
       "tiles",
       "gold",
@@ -225,11 +228,13 @@ describe("PlayerStats clan column", () => {
   it("shows the tag and the bare name in separate columns, without brackets", async () => {
     const playerStats = await mount([player("alice", 3, "ABCDE")]);
 
+    // #4797 puts the clan last on Info: rank | player | tiles | gold |
+    // maxtroops | clan.
     const cells = playerStats.querySelectorAll(
       '.stats-table-row > [role="cell"]',
     );
-    expect(cells[1].textContent?.trim()).toBe("ABCDE");
-    expect(cells[2].textContent?.trim()).toBe("alice");
+    expect(cells[1].textContent?.trim()).toBe("alice");
+    expect(cells[5].textContent?.trim()).toBe("ABCDE");
     // The merged "[ABCDE] alice" form must not survive into the table.
     expect(playerStats.textContent).not.toContain("[ABCDE]");
   });
@@ -240,16 +245,16 @@ describe("PlayerStats clan column", () => {
     const headers = playerStats.querySelectorAll(
       '.stats-table-header > [role="columnheader"]',
     );
-    expect(headers[1].querySelector("img")?.getAttribute("src")).toBe(
+    expect(headers[5].querySelector("img")?.getAttribute("src")).toBe(
       guildIcon,
     );
-    expect(headers[1].getAttribute("title")).toBe("leaderboard.clan");
-    expect(headers[2].querySelector("img")?.getAttribute("src")).toBe(
+    expect(headers[5].getAttribute("title")).toBe("leaderboard.clan");
+    expect(headers[1].querySelector("img")?.getAttribute("src")).toBe(
       profileIcon,
     );
     expect(
       playerStats.querySelector(".stats-table-content")?.getAttribute("style"),
-    ).toContain("34px 80px 100px");
+    ).toContain("34px 100px auto auto auto 80px 32px");
   });
 
   it("rules off every column but the first, so none read as merged", async () => {
@@ -257,7 +262,7 @@ describe("PlayerStats clan column", () => {
 
     const hasRule = (nodes: Element[]) =>
       nodes.map((node) => node.className.includes("border-l"));
-    // rank | clan | player | tiles | gold | maxtroops (+ the ⚙️ track).
+    // rank | player | tiles | gold | maxtroops | clan (+ the ⚙️ track).
     expect(
       hasRule([
         ...playerStats.querySelectorAll(
@@ -284,14 +289,14 @@ describe("PlayerStats clan column", () => {
     expect(rows.length).toBe(2);
     expect(
       [...rows].map((row) =>
-        row.querySelectorAll('[role="cell"]')[1].textContent?.trim(),
+        row.querySelectorAll('[role="cell"]')[5].textContent?.trim(),
       ),
     ).toEqual(["ABCDE", ""]);
   });
 
   it("disappears when deselected in the picker", async () => {
     const settings = new UserSettings();
-    settings.setStatsColumns("player", ["tiles", "gold", "maxtroops"]);
+    settings.setStatsColumns("player", "info", ["tiles", "gold", "maxtroops"]);
     const playerStats = await mount([player("alice", 3, "ABCDE")]);
 
     expect(
@@ -315,35 +320,40 @@ describe("PlayerStats clan column", () => {
         '.stats-table-header > [role="columnheader"]',
       ),
     ];
-    // rank, clan and player are not orderable; the stat tracks are.
+    // Pos # and the stat tracks sort; the name and clan do not.
     expect(
       headers
-        .slice(0, 5)
+        .slice(0, 6)
         .map((header) => header.querySelector("button") !== null),
-    ).toEqual([false, false, false, true, true]);
+    ).toEqual([true, false, true, true, true, false]);
     expect(
-      headers.slice(0, 4).map((header) => header.getAttribute("aria-sort")),
-    ).toEqual([null, null, null, "descending"]);
+      headers.slice(0, 3).map((header) => header.getAttribute("aria-sort")),
+    ).toEqual(["none", null, "descending"]);
   });
 
-  it("survives being the only selected column, leaving the rows unsorted", async () => {
-    new UserSettings().setStatsColumns("player", ["clan"]);
+  it("sorts by Pos # when the clan is the only selected column", async () => {
+    new UserSettings().setStatsColumns("player", "info", ["clan"]);
     const playerStats = await mount([
       player("alice", 3, "AAA"),
       player("bob", 90, "BBB"),
     ]);
 
-    // rank | clan | player | picker — no stat track, so nothing to sort on.
+    // rank | player | clan | picker — Pos # still ranks by territory.
     expect(
       playerStats.querySelector(".stats-table-content")?.getAttribute("style"),
-    ).toContain("34px 80px 100px 32px");
+    ).toContain("34px 100px 80px 32px");
     expect(
       [
         ...playerStats.querySelectorAll(".stats-table-scroll .stats-table-row"),
       ].map((row) =>
-        row.querySelectorAll('[role="cell"]')[1].textContent?.trim(),
+        [...row.querySelectorAll('[role="cell"]')].map((cell) =>
+          cell.textContent?.trim(),
+        ),
       ),
-    ).toEqual(["AAA", "BBB"]);
+    ).toEqual([
+      ["1", "bob", "BBB"],
+      ["2", "alice", "AAA"],
+    ]);
   });
 });
 
@@ -357,11 +367,11 @@ describe("TeamStats clan column", () => {
 
   it("is not a team default, and a stored one still cannot render", () => {
     const settings = new UserSettings();
-    expect(settings.statsColumns("team")).not.toContain("clan");
+    expect(settings.statsColumns("team", "info")).not.toContain("clan");
 
     // The clan def is player-only, so a hand-edited team selection carrying
     // it has nothing to match.
-    settings.setStatsColumns("team", ["clan", "gold"]);
+    settings.setStatsColumns("team", "info", ["clan", "gold"]);
     expect(columnsFor("team").map((column) => column.id)).not.toContain("clan");
   });
 });

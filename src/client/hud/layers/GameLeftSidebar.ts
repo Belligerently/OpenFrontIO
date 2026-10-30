@@ -7,7 +7,9 @@ import { customElement, property, query, state } from "lit/decorators.js";
 import { isCompactViewport } from "../../CompactViewport";
 import type { Controller } from "../../Controller";
 import { Platform } from "../../Platform";
+import { STATS_TABS, type StatsTabId } from "../../StatsConstants";
 import { themeProvider } from "../../theme/ThemeProvider";
+import { UserSettings } from "../../UserSettings";
 import { getTranslatedPlayerTeamLabel, translateText } from "../../Utils";
 import type { GameView } from "../../view";
 import { ImmunityBarVisibleEvent } from "./ImmunityTimer";
@@ -39,6 +41,10 @@ export class GameLeftSidebar extends LitElement implements Controller {
   private spawnBarVisible = false;
   @state()
   private immunityBarVisible = false;
+  private readonly userSettings = new UserSettings();
+  // One tab for both tables, so a team row reads like a player row.
+  @state()
+  private activeTab: StatsTabId = this.userSettings.statsTab();
 
   private playerColor: Colord = new Colord("#FFFFFF");
   @property({ attribute: false }) public game: GameView | null = null;
@@ -105,6 +111,74 @@ export class GameLeftSidebar extends LitElement implements Controller {
 
   private toggleTeamStats(): void {
     this.isTeamStatsShown = !this.isTeamStatsShown;
+  }
+
+  private selectTab(tab: StatsTabId): void {
+    this.activeTab = tab;
+    this.userSettings.setStatsTab(tab);
+  }
+
+  // Arrow keys, Home and End move between tabs and select the one they
+  // land on (the WAI-ARIA tabs pattern with automatic activation).
+  private onTabKeydown(event: KeyboardEvent): void {
+    const focused = (event.target as HTMLElement).id;
+    const index = STATS_TABS.findIndex(
+      (tab) => `leaderboard-tab-${tab.id}` === focused,
+    );
+    if (index === -1) return;
+    const last = STATS_TABS.length - 1;
+    const next =
+      event.key === "ArrowRight"
+        ? (index + 1) % STATS_TABS.length
+        : event.key === "ArrowLeft"
+          ? (index + last) % STATS_TABS.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : null;
+    if (next === null) return;
+    event.preventDefault();
+    // The arrows also pan the map (InputHandler listens on window).
+    event.stopPropagation();
+    this.selectTab(STATS_TABS[next].id);
+    void this.updateComplete.then(() =>
+      this.querySelector<HTMLElement>(
+        `#leaderboard-tab-${STATS_TABS[next].id}`,
+      )?.focus(),
+    );
+  }
+
+  private renderTabs() {
+    return html`
+      <div
+        class="flex gap-1 mt-2 overflow-x-auto text-white"
+        role="tablist"
+        aria-label=${translateText("leaderboard.tabs")}
+        @keydown=${this.onTabKeydown}
+      >
+        ${STATS_TABS.map((tab) => {
+          const selected = tab.id === this.activeTab;
+          return html`
+            <button
+              id="leaderboard-tab-${tab.id}"
+              class="leaderboard-tab shrink-0 px-2 py-1 lg:py-0.5 text-xs lg:text-sm rounded-md border transition-colors ${
+                selected
+                  ? "bg-slate-600 border-slate-300 font-bold"
+                  : "bg-gray-700/50 border-slate-500 text-slate-300 hover:bg-gray-600"
+              }"
+              role="tab"
+              aria-selected=${selected}
+              aria-controls="leaderboard-tabpanel"
+              tabindex=${selected ? 0 : -1}
+              @click=${() => this.selectTab(tab.id)}
+            >
+              ${translateText(tab.labelKey)}
+            </button>
+          `;
+        })}
+      </div>
+    `;
   }
 
   private get isTeamGame(): boolean {
@@ -214,12 +288,23 @@ export class GameLeftSidebar extends LitElement implements Controller {
               `
             : null
         }
-        <div class="flex flex-col gap-2 min-w-0 w-full">
+        ${
+          this.isPlayerStatsShown || this.isTeamStatsShown
+            ? this.renderTabs()
+            : null
+        }
+        <div
+          id="leaderboard-tabpanel"
+          class="flex flex-col gap-2 min-w-0 w-full"
+          role="tabpanel"
+          aria-labelledby="leaderboard-tab-${this.activeTab}"
+        >
           <player-stats
             class=${this.isPlayerStatsShown ? "block min-w-0" : "hidden"}
             .game=${this.game}
             .eventBus=${this.eventBus}
             .visible=${this.isPlayerStatsShown}
+            .tab=${this.activeTab}
           ></player-stats>
           <team-stats
             class=${
@@ -229,6 +314,7 @@ export class GameLeftSidebar extends LitElement implements Controller {
             }
             .game=${this.game}
             .visible=${this.isTeamStatsShown && this.isTeamGame}
+            .tab=${this.activeTab}
           ></team-stats>
         </div>
         <slot></slot>

@@ -4,11 +4,7 @@ import { type StatsRow, StatsTable } from "../../components/StatsTable";
 import type { ColumnId } from "../../StatsConstants";
 import { getTranslatedPlayerTeamLabel } from "../../Utils";
 import type { GameView, PlayerView } from "../../view";
-import {
-  type ColumnDef,
-  type ValueGetter,
-  recordGoldRates,
-} from "./lib/StatsColumns";
+import { type ColumnDef, type ValueGetter } from "./lib/StatsColumns";
 
 export function aggregateTeamValues(
   players: readonly PlayerView[],
@@ -20,20 +16,17 @@ export function aggregateTeamValues(
     (column): column is ColumnDef & { value: ValueGetter } =>
       column.value !== undefined,
   );
-  const values = new Map<ColumnId, number>(
-    totalled.map((column) => [column.id, 0]),
-  );
+  const values = new Map<ColumnId, number>();
 
   for (const player of players) {
     if (!player.isAlive()) continue;
-    // Keep the gold-rate tracker fed even when only the team table renders,
-    // otherwise its rate columns read back 0.
-    recordGoldRates(player, game);
     for (const column of totalled) {
-      values.set(
-        column.id,
-        (values.get(column.id) ?? 0) + column.value(player, game),
-      );
+      // A member with nothing to show (a nation in a human-only column)
+      // adds nothing; a team where no member has a value is left out, so
+      // it shows "—" instead of a made-up 0.
+      const value = column.value(player, game);
+      if (value === null) continue;
+      values.set(column.id, (values.get(column.id) ?? 0) + value);
     }
   }
 

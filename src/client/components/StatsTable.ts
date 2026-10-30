@@ -2,12 +2,20 @@ import { LitElement, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import "../hud/layers/ColumnPicker";
+import { humanStats } from "../hud/layers/lib/HumanStats";
 import {
   type ColumnAlignment,
   type ColumnDef,
-  columnsFor,
+  columnById,
+  type SortOrder,
 } from "../hud/layers/lib/StatsColumns";
-import { type ColumnId, type StatsTableKind } from "../StatsConstants";
+import {
+  type ColumnId,
+  DEFAULT_STATS_TAB,
+  type StatsTabId,
+  type StatsTableKind,
+  statsTabById,
+} from "../StatsConstants";
 import { UserSettings } from "../UserSettings";
 import { translateText } from "../Utils";
 import type { GameView } from "../view";
@@ -20,12 +28,6 @@ export interface StatsRow {
   emphasized?: boolean;
   pinned?: boolean;
   onClick?: () => void;
-}
-
-/** A row plus the rank it renders at (list-wide, not window-relative). */
-interface PlacedRow {
-  row: StatsRow;
-  position: number;
 }
 
 // Fallbacks cover the first render before measurement and jsdom (tests),
@@ -47,11 +49,19 @@ const ALIGNMENT_CLASS: Record<ColumnAlignment, string> = {
 const CELL_CLASS = "h-6 md:h-8 lg:h-9 min-w-0 px-1 flex items-center";
 const DIVIDER_CLASS = "border-l border-l-slate-600/40";
 const HEADER_DIVIDER_CLASS = "border-l border-l-slate-500";
+// Shown for a value the player has none of (see ColumnDef.isHumanOnly).
+const UNAVAILABLE_TEXT = "—";
+
+interface SortState {
+  key: ColumnId;
+  order: SortOrder;
+}
 
 export abstract class StatsTable extends LitElement {
   public game: GameView | null = null;
 
   @property({ type: Boolean }) visible = false;
+  @property({ attribute: false }) tab: StatsTabId = DEFAULT_STATS_TAB;
 
   protected abstract readonly tableKind: StatsTableKind;
   protected abstract buildRows(
@@ -62,11 +72,10 @@ export abstract class StatsTable extends LitElement {
   private readonly userSettings = new UserSettings();
   private rows: StatsRow[] = [];
 
+  // Each tab remembers its own sort for as long as the table lives, so
+  // switching tabs and back returns to the order the player left.
   @state()
-  private sortKey: ColumnId | null = null;
-
-  @state()
-  private sortOrder: "asc" | "desc" = "desc";
+  private sorts = new Map<StatsTabId, SortState>();
 
   @state()
   private scrollOffsetPx = 0;
@@ -79,7 +88,7 @@ export abstract class StatsTable extends LitElement {
   }
 
   willUpdate(changed: Map<string, unknown>) {
-    if (changed.has("visible") && this.visible) {
+    if ((changed.has("visible") || changed.has("tab")) && this.visible) {
       // The scroll container is recreated at scroll offset 0 when the table
       // was hidden, so the remembered offset would misplace the window.
       this.scrollOffsetPx = 0;
@@ -113,58 +122,102 @@ export abstract class StatsTable extends LitElement {
     if (this.visible) this.updateStats();
   }
 
+  /** The active tab's columns this table can show, in display order. */
+  private tabColumns(): readonly ColumnDef[] {
+    return statsTabById(this.tab)
+      .columns.map(columnById)
+      .filter((column) => column.kinds.includes(this.tableKind));
+  }
+
   /**
    * Columns this render shows: every non-hideable column plus the hideable
-   * ones the ⚙️ menu has selected, in registry order.
+   * ones the ⚙️ menu has selected for this tab, in the tab's order.
    */
   private visibleColumns(): readonly ColumnDef[] {
-    const selected = this.userSettings.statsColumns(this.tableKind);
-    return columnsFor(this.tableKind).filter(
+    const selected = this.userSettings.statsColumns(this.tableKind, this.tab);
+    return this.tabColumns().filter(
       (column) => !column.isHideable || selected.includes(column.id),
     );
   }
 
+  private get sort(): SortState | null {
+    return this.sorts.get(this.tab) ?? null;
+  }
+
   private setSort(key: ColumnId) {
-    if (this.sortKey === key) {
-      this.sortOrder = this.sortOrder === "asc" ? "desc" : "asc";
-    } else {
-      this.sortKey = key;
-      this.sortOrder = "desc";
-    }
+    const current = this.sort;
+    const order =
+      current?.key === key
+        ? current.order === "asc"
+          ? "desc"
+          : "asc"
+        : columnById(key).firstSortOrder;
+    this.sorts = new Map(this.sorts).set(this.tab, { key, order });
     this.updateStats();
   }
 
   private onColumnsChanged(event: CustomEvent<ColumnId[]>) {
-    this.userSettings.setStatsColumns(this.tableKind, event.detail);
+    this.userSettings.setStatsColumns(this.tableKind, this.tab, event.detail);
     this.updateStats();
   }
 
+  /**
+   * The tab's sort when its column is on screen; otherwise the tab's
+   * default, then the first column that can sort.
+   */
+  private resolveSort(columns: readonly ColumnDef[]): SortState | null {
+    const orderable = columns.filter((column) => column.isOrderable);
+    const current = this.sort;
+    if (current !== null && orderable.some((c) => c.id === current.key)) {
+      return current;
+    }
+    const fallback =
+      orderable.find((c) => c.id === statsTabById(this.tab).defaultSort) ??
+      orderable[0];
+    if (fallback === undefined) return null;
+    return { key: fallback.id, order: fallback.firstSortOrder };
+  }
+
   private updateStats() {
-    if (this.game === null) return;
+    const game = this.game;
+    if (game === null) return;
 
     const columns = this.visibleColumns();
-    // Only orderable columns have a number to sort on. When none is visible
-    // the rows keep the order buildRows produced.
-    const orderable = columns.filter((column) => column.isOrderable);
-    if (
-      orderable.length > 0 &&
-      !orderable.some((column) => column.id === this.sortKey)
-    ) {
-      this.sortKey = orderable[0].id;
-      this.sortOrder = "desc";
+    if (columns.some((column) => column.isHumanOnly)) {
+      void humanStats.request(game).then((first) => {
+        if (first) this.refresh();
+      });
     }
 
-    const sortKey = this.sortKey;
-    const rows = this.buildRows(this.game, columns);
-    const direction = this.sortOrder === "asc" ? 1 : -1;
-    this.rows =
-      orderable.length === 0 || sortKey === null
-        ? rows
-        : rows.sort(
-            (a, b) =>
-              direction *
-              ((a.values.get(sortKey) ?? 0) - (b.values.get(sortKey) ?? 0)),
-          );
+    const sort = this.resolveSort(columns);
+    if (sort !== null && this.sort?.key !== sort.key) {
+      this.sorts = new Map(this.sorts).set(this.tab, sort);
+    }
+
+    // Owned territory is always read: Pos # ranks by it on every tab.
+    const tiles = columnById("tiles");
+    const rows = withStandings(
+      this.buildRows(
+        game,
+        columns.includes(tiles) ? columns : [...columns, tiles],
+      ),
+    );
+    if (sort === null) {
+      this.rows = rows;
+    } else {
+      const direction = sort.order === "asc" ? 1 : -1;
+      this.rows = rows.sort((a, b) => {
+        const av = a.values.get(sort.key);
+        const bv = b.values.get(sort.key);
+        // Rows with nothing to show sink in either direction.
+        if (av === undefined || bv === undefined) {
+          if (av !== bv) return av === undefined ? 1 : -1;
+        } else if (av !== bv) {
+          return direction * (av - bv);
+        }
+        return standing(a) - standing(b);
+      });
+    }
     this.requestUpdate();
   }
 
@@ -203,19 +256,23 @@ export abstract class StatsTable extends LitElement {
 
   private renderHeaderCell(column: ColumnDef, index: number) {
     const label = translateText(column.labelKey);
+    const title = column.isHumanOnly
+      ? `${label} (${translateText("leaderboard.human_only")})`
+      : label;
     const visual = this.renderHeaderVisual(column, label);
-    const sorted = this.sortKey === column.id;
+    const sort = this.sort;
+    const sorted = sort?.key === column.id;
     return html`
       <div
         class="stats-table-header-cell ${CELL_CLASS} justify-center text-center whitespace-nowrap border-b border-b-slate-500 ${
           index > 0 ? HEADER_DIVIDER_CLASS : ""
         }"
         role="columnheader"
-        title=${label}
+        title=${title}
         aria-sort=${
           column.isOrderable
             ? sorted
-              ? this.sortOrder === "asc"
+              ? sort.order === "asc"
                 ? "ascending"
                 : "descending"
               : "none"
@@ -226,14 +283,14 @@ export abstract class StatsTable extends LitElement {
           column.isOrderable
             ? html`<button
                 class="inline-flex items-center justify-center gap-1 hover:text-sky-200 transition-colors"
-                aria-label=${label}
+                aria-label=${title}
                 @click=${() => this.setSort(column.id)}
               >
                 ${visual}
                 ${
                   sorted
                     ? html`<span class="text-sky-300" aria-hidden="true"
-                        >${this.sortOrder === "asc" ? "↑" : "↓"}</span
+                        >${sort.order === "asc" ? "↑" : "↓"}</span
                       >`
                     : nothing
                 }
@@ -265,7 +322,7 @@ export abstract class StatsTable extends LitElement {
   private renderRow(
     game: GameView,
     columns: readonly ColumnDef[],
-    { row, position }: PlacedRow,
+    row: StatsRow,
     borderClass: string,
     pinned = false,
   ) {
@@ -283,16 +340,17 @@ export abstract class StatsTable extends LitElement {
         ${repeat(
           columns,
           (column) => column.id,
-          (column, index) =>
-            this.renderCell(
+          (column, index) => {
+            const value = row.values.get(column.id);
+            return this.renderCell(
               column,
               index,
-              column.cell(
-                { ...row, position, value: row.values.get(column.id) ?? 0 },
-                game,
-              ),
+              column.isOrderable && value === undefined
+                ? UNAVAILABLE_TEXT
+                : column.cell({ ...row, value: value ?? 0 }, game),
               borderClass,
-            ),
+            );
+          },
         )}
         <div
           class="h-6 md:h-8 lg:h-9 ${DIVIDER_CLASS} ${borderClass}"
@@ -308,16 +366,14 @@ export abstract class StatsTable extends LitElement {
 
     const columns = this.visibleColumns();
     const pinnedIndex = this.rows.findIndex((row) => row.pinned);
-    const pinnedRow: PlacedRow | null =
-      pinnedIndex > PINNED_VISIBLE_THRESHOLD
-        ? { row: this.rows[pinnedIndex], position: pinnedIndex + 1 }
-        : null;
+    const pinnedRow: StatsRow | null =
+      pinnedIndex > PINNED_VISIBLE_THRESHOLD ? this.rows[pinnedIndex] : null;
     const listRows =
       pinnedRow === null
         ? this.rows
         : this.rows.filter((_, index) => index !== pinnedIndex);
     // Virtualize: only rows near the scroll viewport get DOM; spacers keep
-    // the scrollbar geometry for the rest. Positions stay list-wide.
+    // the scrollbar geometry for the rest.
     const firstIndex = Math.max(
       0,
       Math.floor(this.scrollOffsetPx / this.rowHeightPx) - OVERSCAN_ROWS,
@@ -328,16 +384,7 @@ export abstract class StatsTable extends LitElement {
         (this.scrollOffsetPx + this.viewportHeightPx) / this.rowHeightPx,
       ) + OVERSCAN_ROWS,
     );
-    const scrollableRows: PlacedRow[] = listRows
-      .slice(firstIndex, lastIndex)
-      .map((row, sliceIndex) => {
-        const index = firstIndex + sliceIndex;
-        return {
-          row,
-          position:
-            pinnedRow !== null && index >= pinnedIndex ? index + 2 : index + 1,
-        };
-      });
+    const scrollableRows = listRows.slice(firstIndex, lastIndex);
     const topSpacerPx = firstIndex * this.rowHeightPx;
     const bottomSpacerPx = (listRows.length - lastIndex) * this.rowHeightPx;
     // "auto" tracks stay content-sized intrinsically, then split only the
@@ -377,10 +424,13 @@ export abstract class StatsTable extends LitElement {
               >
                 <column-picker
                   class="inline-flex"
-                  .columns=${columnsFor(this.tableKind).filter(
+                  .columns=${this.tabColumns().filter(
                     (column) => column.isHideable,
                   )}
-                  .selected=${this.userSettings.statsColumns(this.tableKind)}
+                  .selected=${this.userSettings.statsColumns(
+                    this.tableKind,
+                    this.tab,
+                  )}
                   @columns-changed=${this.onColumnsChanged}
                 ></column-picker>
               </div>
@@ -403,12 +453,12 @@ export abstract class StatsTable extends LitElement {
               }
               ${repeat(
                 scrollableRows,
-                (placed) => placed.row.key,
-                (placed, index) =>
+                (row) => row.key,
+                (row, index) =>
                   this.renderRow(
                     game,
                     columns,
-                    placed,
+                    row,
                     index < scrollableRows.length - 1 ||
                       pinnedRow !== null ||
                       bottomSpacerPx > 0
@@ -437,4 +487,23 @@ export abstract class StatsTable extends LitElement {
       </div>
     `;
   }
+}
+
+function standing(row: StatsRow): number {
+  return row.values.get("rank") ?? 0;
+}
+
+/**
+ * Each row's Pos #: its place by owned territory, ties kept in the order the
+ * rows came in.
+ */
+export function withStandings(rows: readonly StatsRow[]): StatsRow[] {
+  const byTiles = [...rows].sort(
+    (a, b) => (b.values.get("tiles") ?? 0) - (a.values.get("tiles") ?? 0),
+  );
+  const standings = new Map(byTiles.map((row, index) => [row, index + 1]));
+  return rows.map((row) => ({
+    ...row,
+    values: new Map(row.values).set("rank", standings.get(row)!),
+  }));
 }

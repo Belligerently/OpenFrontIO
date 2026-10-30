@@ -32,8 +32,8 @@ describe("ColumnPicker", () => {
     picker.addEventListener("columns-changed", (event) => {
       selection = (event as CustomEvent<ColumnId[]>).detail;
     });
-    // Registry order: index 0 is clan, 1 is playerType, 2 is tiles, 3 is gold.
-    (popup!.querySelectorAll("input")[3] as HTMLInputElement).click();
+    // Registry order: index 0 is clan, 1 is tiles, 2 is gold.
+    (popup!.querySelectorAll("input")[2] as HTMLInputElement).click();
     expect(selection).toEqual(["tiles", "gold"]);
 
     (popup!.querySelectorAll("input")[0] as HTMLInputElement).click();
