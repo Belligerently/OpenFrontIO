@@ -8,10 +8,12 @@ import {
   GraphicsPresetsSchema,
 } from "./render/gl/GraphicsOverrides";
 import {
-  COLUMN_IDS,
   ColumnId,
-  DEFAULT_STATS_COLUMNS,
+  DEFAULT_STATS_TAB,
+  STATS_TAB_IDS,
+  StatsTabId,
   StatsTableKind,
+  statsTabById,
 } from "./StatsConstants";
 // DesktopShell.ts imports nothing, so this cannot introduce an import cycle
 // (verified with madge: 58 cycles before and after, none involving it).
@@ -214,14 +216,16 @@ export const EFFECTS_KEY = "settings.effects";
 export const LOADOUTS_KEY = "settings.cosmeticLoadouts";
 /** The loadout slot equip changes are written back into, if any. */
 export const ACTIVE_LOADOUT_KEY = "settings.activeLoadout";
-// Keep the existing storage key so the rename does not reset saved columns.
-export const PLAYER_STATS_COLUMNS_KEY = "settings.leaderboardColumns";
-export const TEAM_STATS_COLUMNS_KEY = "settings.teamStatsColumns";
 export const FAVORITE_EMOJIS_KEY = "settings.favoriteEmojis";
-const STATS_COLUMNS_KEYS: Record<StatsTableKind, string> = {
-  player: PLAYER_STATS_COLUMNS_KEY,
-  team: TEAM_STATS_COLUMNS_KEY,
-};
+export const STATS_TAB_KEY = "settings.leaderboardTab";
+/**
+ * Each tab keeps its own column choice, per table. The single-list keys used
+ * before the tabs (settings.leaderboardColumns, settings.teamStatsColumns)
+ * are not read: a list chosen for one table does not map onto four tabs.
+ */
+export function statsColumnsKey(kind: StatsTableKind, tab: StatsTabId): string {
+  return `settings.leaderboardColumns.${kind}.${tab}`;
+}
 
 /**
  * Cosmetic selections are stored per player: while logged in, the storage key
@@ -877,34 +881,43 @@ export class UserSettings {
     else this.setString(LOADOUTS_KEY, JSON.stringify(loadouts));
   }
 
-  // Invalid/corrupt storage, unknown ids, or an empty result fall back to
-  // defaults, matching the getSelectedEffects defensive pattern. Returned
-  // order is registry (display) order regardless of stored order.
-  private getColumnIds(key: string, defaults: readonly ColumnId[]): ColumnId[] {
-    const raw = this.getString(key, "");
+  // Invalid/corrupt storage, ids the tab does not offer, or an empty result
+  // fall back to the tab's defaults, matching the getSelectedEffects
+  // defensive pattern. Returned order is the tab's display order regardless
+  // of stored order.
+  statsColumns(kind: StatsTableKind, tab: StatsTabId): ColumnId[] {
+    const def = statsTabById(tab);
+    const raw = this.getString(statsColumnsKey(kind, tab), "");
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          const filtered = COLUMN_IDS.filter((id) => parsed.includes(id));
+          const filtered = def.columns.filter((id) => parsed.includes(id));
           if (filtered.length > 0) return filtered;
         }
       } catch {
         // fall through to defaults
       }
     }
-    return [...defaults];
+    return [...def.defaultColumns];
   }
 
-  statsColumns(kind: StatsTableKind): ColumnId[] {
-    return this.getColumnIds(
-      STATS_COLUMNS_KEYS[kind],
-      DEFAULT_STATS_COLUMNS[kind],
-    );
+  setStatsColumns(
+    kind: StatsTableKind,
+    tab: StatsTabId,
+    ids: ColumnId[],
+  ): void {
+    this.setString(statsColumnsKey(kind, tab), JSON.stringify(ids));
   }
 
-  setStatsColumns(kind: StatsTableKind, ids: ColumnId[]): void {
-    this.setString(STATS_COLUMNS_KEYS[kind], JSON.stringify(ids));
+  /** The leaderboard tab both stats tables show. */
+  statsTab(): StatsTabId {
+    const stored = this.getString(STATS_TAB_KEY, DEFAULT_STATS_TAB);
+    return STATS_TAB_IDS.find((id) => id === stored) ?? DEFAULT_STATS_TAB;
+  }
+
+  setStatsTab(tab: StatsTabId): void {
+    this.setString(STATS_TAB_KEY, tab);
   }
 
   /**

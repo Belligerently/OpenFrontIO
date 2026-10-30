@@ -8,6 +8,7 @@ import {
 } from "../src/client/hud/HotbarIcons";
 import { columnsFor } from "../src/client/hud/layers/lib/StatsColumns";
 import { PlayerStats } from "../src/client/hud/layers/PlayerStats";
+import { TeamStats } from "../src/client/hud/layers/TeamStats";
 import { UserSettings } from "../src/client/UserSettings";
 import type { GameView, PlayerView } from "../src/client/view";
 
@@ -30,6 +31,8 @@ function player(
     goldEarned: () => 0,
     troops: () => tiles,
     totalUnitLevels: () => tiles,
+    allies: () => [],
+    betrayals: () => 0,
     isAlive: () => true,
     isOnSameTeam: () => false,
   } as unknown as PlayerView;
@@ -65,8 +68,9 @@ describe("PlayerStats", () => {
     expect(content?.classList).toContain("min-w-full");
     // Only selected stat tracks share definite spare space. Rank, name, and
     // picker remain fixed and never stretch.
+    // Economy opens on owned, gold, max troops and gold income/min.
     expect(content?.getAttribute("style")).toContain(
-      "34px 100px auto auto auto 32px",
+      "34px 100px auto auto auto auto 32px",
     );
 
     playerStats.remove();
@@ -133,10 +137,9 @@ describe("PlayerStats", () => {
   });
 
   it("centers headers and discrete counts and renders white troop icons", async () => {
-    new UserSettings().setStatsColumns("player", [
+    new UserSettings().setStatsColumns("player", "economy", [
       "troops",
       "maxtroops",
-      "cities",
     ]);
     const me = player("me", 3);
     const game = {
@@ -158,9 +161,6 @@ describe("PlayerStats", () => {
     const headers = playerStats.querySelectorAll(
       '.stats-table-header > [role="columnheader"]',
     );
-    const countCell = playerStats.querySelector(
-      '.stats-table-row > [role="cell"]:nth-child(5)',
-    );
     const troopIcon = headers[2].querySelector("img");
     const maxTroopIcons = headers[3].querySelectorAll("img");
     expect(headers[1].classList).toContain("justify-center");
@@ -178,6 +178,13 @@ describe("PlayerStats", () => {
     expect(maxTroopIcons[1].getAttribute("src")).toBe(upperLimitIcon);
     expect(maxTroopIcons[1].classList).toContain("brightness-0");
     expect(maxTroopIcons[1].classList).toContain("invert");
+
+    playerStats.tab = "buildings";
+    await playerStats.updateComplete;
+    // rank | player | cities: building counts are centred.
+    const countCell = playerStats.querySelector(
+      '.stats-table-row > [role="cell"]:nth-child(3)',
+    );
     expect(countCell?.classList).toContain("justify-center");
     expect(countCell?.classList).toContain("text-center");
 
@@ -191,19 +198,13 @@ describe("PlayerStats clan column", () => {
     (
       UserSettings as unknown as { cache: Map<string, string | null> }
     ).cache.clear();
-    // Off by default; these tests turn it on in the picker.
-    new UserSettings().setStatsColumns("player", [
-      "clan",
-      "tiles",
-      "gold",
-      "maxtroops",
-    ]);
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
   });
 
+  // The clan lives on Diplomacy, shown by default there.
   async function mount(players: PlayerView[]): Promise<PlayerStats> {
     const game = {
       myPlayer: () => players[0],
@@ -216,20 +217,28 @@ describe("PlayerStats clan column", () => {
     const playerStats = new PlayerStats();
     playerStats.game = game;
     playerStats.visible = true;
+    playerStats.tab = "diplomacy";
     document.body.append(playerStats);
     playerStats.refresh();
     await playerStats.updateComplete;
     return playerStats;
   }
 
+  it("is not on the Economy tab", () => {
+    expect(new UserSettings().statsColumns("player", "economy")).not.toContain(
+      "clan",
+    );
+  });
+
   it("shows the tag and the bare name in separate columns, without brackets", async () => {
     const playerStats = await mount([player("alice", 3, "ABCDE")]);
 
+    // rank | player | clan | allies | betrayals.
     const cells = playerStats.querySelectorAll(
       '.stats-table-row > [role="cell"]',
     );
-    expect(cells[1].textContent?.trim()).toBe("ABCDE");
-    expect(cells[2].textContent?.trim()).toBe("alice");
+    expect(cells[1].textContent?.trim()).toBe("alice");
+    expect(cells[2].textContent?.trim()).toBe("ABCDE");
     // The merged "[ABCDE] alice" form must not survive into the table.
     expect(playerStats.textContent).not.toContain("[ABCDE]");
   });
@@ -240,16 +249,16 @@ describe("PlayerStats clan column", () => {
     const headers = playerStats.querySelectorAll(
       '.stats-table-header > [role="columnheader"]',
     );
-    expect(headers[1].querySelector("img")?.getAttribute("src")).toBe(
+    expect(headers[2].querySelector("img")?.getAttribute("src")).toBe(
       guildIcon,
     );
-    expect(headers[1].getAttribute("title")).toBe("leaderboard.clan");
-    expect(headers[2].querySelector("img")?.getAttribute("src")).toBe(
+    expect(headers[2].getAttribute("title")).toBe("leaderboard.clan");
+    expect(headers[1].querySelector("img")?.getAttribute("src")).toBe(
       profileIcon,
     );
     expect(
       playerStats.querySelector(".stats-table-content")?.getAttribute("style"),
-    ).toContain("34px 80px 100px");
+    ).toContain("34px 100px 80px auto auto 32px");
   });
 
   it("rules off every column but the first, so none read as merged", async () => {
@@ -257,19 +266,19 @@ describe("PlayerStats clan column", () => {
 
     const hasRule = (nodes: Element[]) =>
       nodes.map((node) => node.className.includes("border-l"));
-    // rank | clan | player | tiles | gold | maxtroops (+ the ⚙️ track).
+    // rank | player | clan | allies | betrayals (+ the ⚙️ track).
     expect(
       hasRule([
         ...playerStats.querySelectorAll(
           '.stats-table-header > [role="columnheader"]',
         ),
       ]),
-    ).toEqual([false, true, true, true, true, true, true]);
+    ).toEqual([false, true, true, true, true, true]);
     expect(
       hasRule([
         ...playerStats.querySelectorAll('.stats-table-row > [role="cell"]'),
       ]),
-    ).toEqual([false, true, true, true, true, true]);
+    ).toEqual([false, true, true, true, true]);
   });
 
   it("leaves an empty cell for clanless players", async () => {
@@ -284,14 +293,16 @@ describe("PlayerStats clan column", () => {
     expect(rows.length).toBe(2);
     expect(
       [...rows].map((row) =>
-        row.querySelectorAll('[role="cell"]')[1].textContent?.trim(),
+        row.querySelectorAll('[role="cell"]')[2].textContent?.trim(),
       ),
     ).toEqual(["ABCDE", ""]);
   });
 
   it("disappears when deselected in the picker", async () => {
-    const settings = new UserSettings();
-    settings.setStatsColumns("player", ["tiles", "gold", "maxtroops"]);
+    new UserSettings().setStatsColumns("player", "diplomacy", [
+      "allies",
+      "betrayals",
+    ]);
     const playerStats = await mount([player("alice", 3, "ABCDE")]);
 
     expect(
@@ -303,7 +314,7 @@ describe("PlayerStats clan column", () => {
     ).not.toContain("leaderboard.clan");
     expect(
       playerStats.querySelector(".stats-table-content")?.getAttribute("style"),
-    ).toContain("34px 100px");
+    ).toContain("34px 100px auto auto 32px");
     expect(playerStats.textContent).not.toContain("ABCDE");
   });
 
@@ -315,35 +326,41 @@ describe("PlayerStats clan column", () => {
         '.stats-table-header > [role="columnheader"]',
       ),
     ];
-    // rank, clan and player are not orderable; the stat tracks are.
+    // Pos # and the stat tracks sort; the name and clan do not.
     expect(
       headers
         .slice(0, 5)
         .map((header) => header.querySelector("button") !== null),
-    ).toEqual([false, false, false, true, true]);
+    ).toEqual([true, false, false, true, true]);
+    // Diplomacy opens sorted by Pos #, leader first.
     expect(
       headers.slice(0, 4).map((header) => header.getAttribute("aria-sort")),
-    ).toEqual([null, null, null, "descending"]);
+    ).toEqual(["ascending", null, null, "none"]);
   });
 
-  it("survives being the only selected column, leaving the rows unsorted", async () => {
-    new UserSettings().setStatsColumns("player", ["clan"]);
+  it("sorts by Pos # when the clan is the only selected column", async () => {
+    new UserSettings().setStatsColumns("player", "diplomacy", ["clan"]);
     const playerStats = await mount([
       player("alice", 3, "AAA"),
       player("bob", 90, "BBB"),
     ]);
 
-    // rank | clan | player | picker — no stat track, so nothing to sort on.
+    // rank | player | clan | picker — Pos # still ranks by territory.
     expect(
       playerStats.querySelector(".stats-table-content")?.getAttribute("style"),
-    ).toContain("34px 80px 100px 32px");
+    ).toContain("34px 100px 80px 32px");
     expect(
       [
         ...playerStats.querySelectorAll(".stats-table-scroll .stats-table-row"),
       ].map((row) =>
-        row.querySelectorAll('[role="cell"]')[1].textContent?.trim(),
+        [...row.querySelectorAll('[role="cell"]')].map((cell) =>
+          cell.textContent?.trim(),
+        ),
       ),
-    ).toEqual(["AAA", "BBB"]);
+    ).toEqual([
+      ["1", "bob", "BBB"],
+      ["2", "alice", "AAA"],
+    ]);
   });
 });
 
@@ -355,13 +372,41 @@ describe("TeamStats clan column", () => {
     ).cache.clear();
   });
 
-  it("is not a team default, and a stored one still cannot render", () => {
-    const settings = new UserSettings();
-    expect(settings.statsColumns("team")).not.toContain("clan");
-
-    // The clan def is player-only, so a hand-edited team selection carrying
-    // it has nothing to match.
-    settings.setStatsColumns("team", ["clan", "gold"]);
+  it("never renders on the team table, even as a Diplomacy default", async () => {
+    // Diplomacy's defaults are shared by both tables; the clan def is
+    // player-only, so the team table has nothing to match it with.
+    expect(new UserSettings().statsColumns("team", "diplomacy")).toContain(
+      "clan",
+    );
     expect(columnsFor("team").map((column) => column.id)).not.toContain("clan");
+
+    const teamStats = new TeamStats();
+    teamStats.game = {
+      myPlayer: () => null,
+      playerViews: () => [],
+      config: () => ({ maxTroops: () => 100 }),
+      ticks: () => 600,
+      numLandTiles: () => 100,
+      numTilesWithFallout: () => 0,
+    } as unknown as GameView;
+    teamStats.visible = true;
+    teamStats.tab = "diplomacy";
+    document.body.append(teamStats);
+    teamStats.refresh();
+    await teamStats.updateComplete;
+    expect(
+      [
+        ...teamStats.querySelectorAll(
+          '.stats-table-header > [role="columnheader"]',
+        ),
+      ].map((header) => header.getAttribute("title")),
+    ).toEqual([
+      "leaderboard.rank",
+      "leaderboard.team",
+      "leaderboard.allies",
+      "leaderboard.betrayals",
+      null,
+    ]);
+    teamStats.remove();
   });
 });

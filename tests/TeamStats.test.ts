@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { PlayerType } from "@openfront/engine-api/game/GameTypes";
+import { goldRateTracker } from "../src/client/hud/layers/lib/GoldRateTracker";
 import { columnById } from "../src/client/hud/layers/lib/StatsColumns";
 import {
   aggregateTeamValues,
@@ -57,6 +58,10 @@ describe("aggregateTeamValues", () => {
 
 describe("TeamStats", () => {
   beforeEach(() => {
+    // The aggregation tests above feed the shared tracker engine players,
+    // whose cumulative gold is a bigint; Economy's default gold/min column
+    // would read those samples back for the stub players' smallIDs.
+    goldRateTracker.resetAll();
     localStorage.clear();
     (
       UserSettings as unknown as { cache: Map<string, string | null> }

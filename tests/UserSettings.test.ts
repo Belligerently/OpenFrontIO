@@ -8,12 +8,12 @@ import {
   LOADOUTS_KEY,
   MAX_LOADOUTS,
   PATTERN_KEY,
-  PLAYER_STATS_COLUMNS_KEY,
-  TEAM_STATS_COLUMNS_KEY,
+  STATS_TAB_KEY,
   USER_SETTINGS_CHANGED_EVENT,
   UserSettings,
   getDefaultKeybinds,
   keysMayBeShared,
+  statsColumnsKey,
 } from "../src/client/UserSettings";
 
 // UserSettings keeps a static in-memory cache and the active player id; reset
@@ -357,68 +357,121 @@ describe("UserSettings cosmetic loadouts", () => {
 describe("UserSettings stats columns", () => {
   beforeEach(resetUserSettingsState);
 
-  it("returns defaults when nothing is stored", () => {
-    // The clan column is opt-in, so both tables open with the same stats.
-    expect(new UserSettings().statsColumns("player")).toEqual([
-      "tiles",
-      "gold",
-      "maxtroops",
-    ]);
-    expect(new UserSettings().statsColumns("team")).toEqual([
-      "tiles",
-      "gold",
-      "maxtroops",
-    ]);
-  });
-
-  it("round-trips a selection in registry order", () => {
+  it("returns each tab's defaults when nothing is stored", () => {
     const s = new UserSettings();
-    // Stored order is check order; getter returns registry (display) order.
-    s.setStatsColumns("player", ["warships", "gold"]);
-    expect(s.statsColumns("player")).toEqual(["gold", "warships"]);
+    for (const kind of ["player", "team"] as const) {
+      // Troops and the per-source income rates are opt-in on Economy.
+      expect(s.statsColumns(kind, "economy")).toEqual([
+        "tiles",
+        "gold",
+        "maxtroops",
+        "goldIncomePerMin",
+      ]);
+      expect(s.statsColumns(kind, "buildings")).toEqual([
+        "cities",
+        "ports",
+        "factories",
+        "silos",
+        "sams",
+        "warships",
+      ]);
+      expect(s.statsColumns(kind, "diplomacy")).toEqual([
+        "clan",
+        "allies",
+        "betrayals",
+      ]);
+    }
   });
 
-  it("filters unknown ids", () => {
-    localStorage.setItem(
-      PLAYER_STATS_COLUMNS_KEY,
-      JSON.stringify(["gold", "bogus"]),
-    );
-    expect(new UserSettings().statsColumns("player")).toEqual(["gold"]);
+  it("round-trips a selection in the tab's order", () => {
+    const s = new UserSettings();
+    // Stored order is check order; getter returns the tab's display order.
+    s.setStatsColumns("player", "economy", ["goldEarned", "troops", "gold"]);
+    expect(s.statsColumns("player", "economy")).toEqual([
+      "gold",
+      "troops",
+      "goldEarned",
+    ]);
   });
 
-  it("drops the removed attacks column from persisted selections", () => {
-    localStorage.setItem(
-      PLAYER_STATS_COLUMNS_KEY,
-      JSON.stringify(["attacks", "gold"]),
+  it("keeps each tab's selection to itself", () => {
+    const s = new UserSettings();
+    s.setStatsColumns("player", "economy", ["troops"]);
+    expect(s.statsColumns("player", "economy")).toEqual(["troops"]);
+    expect(s.statsColumns("player", "buildings")).toHaveLength(6);
+    expect(localStorage.getItem(statsColumnsKey("player", "economy"))).toBe(
+      '["troops"]',
     );
-    expect(new UserSettings().statsColumns("player")).toEqual(["gold"]);
+  });
+
+  it("filters unknown ids and ids from other tabs", () => {
+    localStorage.setItem(
+      statsColumnsKey("player", "economy"),
+      JSON.stringify(["gold", "bogus", "cities"]),
+    );
+    expect(new UserSettings().statsColumns("player", "economy")).toEqual([
+      "gold",
+    ]);
   });
 
   it("falls back to defaults on corrupt JSON", () => {
-    localStorage.setItem(PLAYER_STATS_COLUMNS_KEY, "not json");
-    expect(new UserSettings().statsColumns("player")).toEqual([
-      "tiles",
-      "gold",
-      "maxtroops",
+    localStorage.setItem(statsColumnsKey("player", "diplomacy"), "not json");
+    expect(new UserSettings().statsColumns("player", "diplomacy")).toEqual([
+      "clan",
+      "allies",
+      "betrayals",
     ]);
   });
 
   it("falls back to defaults when no valid ids remain", () => {
-    localStorage.setItem(PLAYER_STATS_COLUMNS_KEY, JSON.stringify(["bogus"]));
-    expect(new UserSettings().statsColumns("player")).toEqual([
+    localStorage.setItem(
+      statsColumnsKey("player", "economy"),
+      JSON.stringify(["bogus"]),
+    );
+    expect(new UserSettings().statsColumns("player", "economy")).toEqual([
       "tiles",
       "gold",
       "maxtroops",
+      "goldIncomePerMin",
+    ]);
+  });
+
+  it("ignores the single-list keys from before the tabs", () => {
+    localStorage.setItem(
+      "settings.leaderboardColumns",
+      JSON.stringify(["cities"]),
+    );
+    expect(new UserSettings().statsColumns("player", "economy")).toEqual([
+      "tiles",
+      "gold",
+      "maxtroops",
+      "goldIncomePerMin",
     ]);
   });
 
   it("keeps player and team selections independent", () => {
     const s = new UserSettings();
-    s.setStatsColumns("player", ["gold"]);
-    s.setStatsColumns("team", ["warships"]);
-    expect(s.statsColumns("player")).toEqual(["gold"]);
-    expect(s.statsColumns("team")).toEqual(["warships"]);
-    expect(localStorage.getItem(TEAM_STATS_COLUMNS_KEY)).toBe('["warships"]');
+    s.setStatsColumns("player", "buildings", ["ports"]);
+    s.setStatsColumns("team", "buildings", ["warships"]);
+    expect(s.statsColumns("player", "buildings")).toEqual(["ports"]);
+    expect(s.statsColumns("team", "buildings")).toEqual(["warships"]);
+  });
+});
+
+describe("UserSettings stats tab", () => {
+  beforeEach(resetUserSettingsState);
+
+  it("opens on Economy and remembers the chosen tab", () => {
+    const s = new UserSettings();
+    expect(s.statsTab()).toBe("economy");
+    s.setStatsTab("diplomacy");
+    expect(new UserSettings().statsTab()).toBe("diplomacy");
+    expect(localStorage.getItem(STATS_TAB_KEY)).toBe("diplomacy");
+  });
+
+  it("falls back to Economy for a tab that does not exist", () => {
+    localStorage.setItem(STATS_TAB_KEY, "bombs");
+    expect(new UserSettings().statsTab()).toBe("economy");
   });
 });
 

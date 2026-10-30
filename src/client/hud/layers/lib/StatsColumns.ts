@@ -1,7 +1,7 @@
-import { PlayerType, UnitType } from "@openfront/engine-api/game/GameTypes";
+import { UnitType } from "@openfront/engine-api/game/GameTypes";
 import { renderNumber, renderTroops } from "@openfront/engine-lib/Format";
 import type { ColumnId, StatsTableKind } from "../../../StatsConstants";
-import { formatPercentage, translateText } from "../../../Utils";
+import { formatPercentage } from "../../../Utils";
 import type { GameView, PlayerView } from "../../../view";
 import {
   allianceIcon,
@@ -34,14 +34,14 @@ export type ColumnHeaderVisual =
         | { readonly src: string; readonly white?: true }
         | { readonly text: string };
     }
-  // Text is a translation key ("leaderboard.type") or a literal symbol
+  // Text is a translation key or a literal symbol
   // ("#" reads the same in every language and falls back to itself).
   | { readonly kind: "text"; readonly text: string };
 export type ColumnAlignment = "start" | "center" | "end";
+export type SortOrder = "asc" | "desc";
 
 /** One row as a column sees it. `value` is that column's own number. */
 export interface ColumnRow {
-  readonly position: number;
   readonly name: string;
   readonly clanTag?: string | null;
   readonly value: number;
@@ -61,15 +61,17 @@ export interface ColumnDef {
   readonly kinds: readonly StatsTableKind[];
   /** Offered in the ⚙️ menu; non-hideable columns always render. */
   readonly isHideable: boolean;
-  /** Header is a sort button. True exactly when `value` is set. */
+  /** Header is a sort button. */
   readonly isOrderable: boolean;
+  /** Direction of the first click on the header. */
+  readonly firstSortOrder: SortOrder;
   /** Number behind the column — sorting and team totals. */
   readonly value?: ValueGetter;
   readonly cell: (row: ColumnRow, game: GameView) => string;
 }
 
 type ColumnInput = Pick<ColumnDef, "id" | "labelKey" | "cell"> &
-  Partial<Omit<ColumnDef, "id" | "labelKey" | "cell" | "isOrderable">>;
+  Partial<Omit<ColumnDef, "id" | "labelKey" | "cell">>;
 
 function defineColumn(input: ColumnInput): ColumnDef {
   return {
@@ -77,8 +79,9 @@ function defineColumn(input: ColumnInput): ColumnDef {
     align: "end",
     kinds: ["player", "team"],
     isHideable: true,
-    ...input,
+    firstSortOrder: "desc",
     isOrderable: input.value !== undefined,
+    ...input,
   };
 }
 
@@ -104,7 +107,8 @@ const troopHeaderVisual = {
   white: true,
 } as const satisfies ColumnHeaderVisual;
 
-// This registry is the source of truth for column IDs and display order.
+// This registry is the source of truth for column IDs; each tab sets the
+// order its columns display in (StatsConstants STATS_TABS).
 export const COLUMN_DEFS: readonly ColumnDef[] = [
   defineColumn({
     id: "rank",
@@ -113,7 +117,13 @@ export const COLUMN_DEFS: readonly ColumnDef[] = [
     width: "34px",
     align: "center",
     isHideable: false,
-    cell: (row) => String(row.position),
+    // A standing by owned territory, not the row's index: it stays with the
+    // player whatever the table is sorted by. StatsTable fills the value in,
+    // since a standing needs every row; sorting it ascending lists the
+    // leader first.
+    isOrderable: true,
+    firstSortOrder: "asc",
+    cell: (row) => String(row.value),
   }),
   defineColumn({
     id: "clan",
@@ -134,43 +144,6 @@ export const COLUMN_DEFS: readonly ColumnDef[] = [
     kinds: ["player"],
     isHideable: false,
     cell: (row) => row.name,
-  }),
-  defineColumn({
-    id: "playerType",
-    labelKey: "leaderboard.playerType",
-    headerVisual: { kind: "text", text: "leaderboard.type" },
-    // Player-table only: a team has no single type, and aggregating the
-    // per-player type codes would be meaningless.
-    kinds: ["player"],
-    // Shared track: the cell reads row.value, so this column needs a value
-    // getter — and the registry ties "auto" width to having one.
-    align: "center",
-    value: (player) => {
-      switch (player.type()) {
-        case PlayerType.Human:
-          return 0;
-        case PlayerType.Nation:
-          return 1;
-        case PlayerType.Bot:
-          return 2;
-        default:
-          return 3;
-      }
-    },
-    cell: (row) => {
-      // Reuses the player_type.* keys so the Type column matches the
-      // player info overlay (bots are called "Tribes" in the UI).
-      switch (row.value) {
-        case 0:
-          return translateText("player_type.player");
-        case 1:
-          return translateText("player_type.nation");
-        case 2:
-          return translateText("player_type.bot");
-        default:
-          return "?";
-      }
-    },
   }),
   defineColumn({
     id: "team",
@@ -198,6 +171,17 @@ export const COLUMN_DEFS: readonly ColumnDef[] = [
     headerVisual: { kind: "icon", src: goldCoinIcon },
     // Gold is a bigint, but game values remain safely below Number.MAX_SAFE_INTEGER.
     value: (player) => Number(player.gold()),
+    cell: (row) => renderNumber(row.value),
+  }),
+  defineColumn({
+    id: "goldEarned",
+    labelKey: "leaderboard.goldEarned",
+    headerVisual: {
+      kind: "icon",
+      src: goldCoinIcon,
+      superscript: { text: "Σ" },
+    },
+    value: (player) => player.goldEarned(),
     cell: (row) => renderNumber(row.value),
   }),
   defineColumn({
